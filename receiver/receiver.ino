@@ -25,6 +25,8 @@ struct package {		  // | Normal 	| Setting 	| Confirm
 	uint8_t type;		    // | 0 			  | 1 		    | 2
 	uint16_t throttle;	// | Throttle | ---		    | ---
 	uint8_t trigger;	  // | Trigger 	| --- 		  | ---
+	bool frontLight;	
+	uint8_t speedMode;   // | 0 			| 1			| 2
 } remPackage;
 
 #define NORMAL 0
@@ -44,6 +46,7 @@ struct callback {
 	long rpm;
 	long tachometerAbs;
 	long alltimedistance;
+	float current;
 } returnData;
 
 // Defining struct to handle receiver settings
@@ -94,7 +97,8 @@ bool recievedData = false;
 // short statusCycleTime = 0;
 unsigned long previousStatusMillis, currentMillis, startCycleMillis = 0;
 
-const uint16_t defaultThrottle = 512;
+const uint16_t defaultThrottle = 0;
+const uint8_t defaultSpeedMode = 0;
 const short timeoutMax = 500;
 
 // Defining receiver pins
@@ -135,19 +139,39 @@ unsigned long last_int;
 long mem_last;
 byte memory_last;
 // battery batteryMeasure
-
+// slow start
 float speed_multiplier = 0.0;
 unsigned long last_throttle_multiplier;
 uint8_t last_trigger = 0;
 
 // My edited settings
 const uint8_t batteryMeasurePin = A3;
-const float refVoltage = 5.02;
+// const float refVoltage = 5.02;
+const float refVoltage = 4.60;
 unsigned long lastTransmission;
+const float batteryCoef = 10.77;
+
+const uint8_t currentMeasurePin = A6;
+// float correctCoef = 1.132;
+// ESC motor range signal
+int minValue = 1120;
+int maxValue = 2000;
+int throttleToWrite;
+int brakeToWrite;
+// front light settings
+long lastTimeInterval = 2000;
+unsigned long lastLightTime = 0;
+bool frontLight = false;
+const uint8_t frontLightPin = 3;
+const uint8_t brakeLightPin = 6;
+unsigned long brakeLightMillis = 0;
+long brakeLightInterval = 250;
+int brakeLightState = LOW;
 // Initiate VescUart class for UART communication
 // VescUart UART;
 int esc_speed;
 int last_esc_speed;
+int maxSpeedCoef = 10;
 void setup()
 {
 	#ifdef DEBUG
@@ -162,7 +186,7 @@ void setup()
       Serial.begin(115200);
     #endif
 	#endif
-	// Serial.begin(9600);
+	Serial.begin(9600);
   #ifdef FIREFLYPCB
     // Uses the Atmega32u4 that has a seperate UART port
     UART.setSerialPort(&Serial1);
@@ -175,17 +199,20 @@ void setup()
 
 	// pinMode(statusLedPin, OUTPUT);
 	// pinMode(resetAddressPin, INPUT_PULLUP);
-	esc.attach(throttlePin,1000,2000);
+	esc.attach(throttlePin);
 
 	DEBUG_PRINT("Setup complete - begin listening");
 	returnData.ampHours = 0.0;
 	returnData.rpm = 0.0;
 	returnData.tachometerAbs = 0;
-
+	returnData.current = 0.0;
+	Serial.begin(9600);
 	// подключить прерывание на 2 пин при повышении сигнала
 	attachInterrupt(0,sens,RISING); 
 	Wire.begin();
 	turns_at_start = read_from_at24();
+	pinMode(frontLightPin, OUTPUT);
+	pinMode(brakeLightPin, OUTPUT);
 }
 
 void loop()
@@ -226,7 +253,6 @@ void loop()
 		radio.read( &remPackage, sizeof(remPackage) );
 		DEBUG_PRINT( "New package: '" + String(remPackage.type) + "-" + String(remPackage.throttle) + "-" + String(remPackage.trigger) + "'" );
     	delay(10); 
-    
 		if( remPackage.type <= 2 ){
 			timeoutTimer = millis();
 			recievedData = true;
@@ -235,13 +261,21 @@ void loop()
 	/* End listen for transmission */
 
 	/* Begin data handling */
-	if(recievedData == true){
-
+	if(recievedData == true){ 
+		Serial.println("received data");
 		// setStatus(CONNECTED);
 		if ( remPackage.type == NORMAL ) {
-
+			// Serial.println("throttle from tx " + String(remPackage.throttle));
 			// Normal package
-			speedControl( remPackage.throttle, remPackage.trigger, last_trigger );
+			if (remPackage.throttle < 512) {
+				throttleToWrite = 0;
+				brakeToWrite = map(remPackage.throttle, 0, 511, 0, 1023);
+			} else {
+				throttleToWrite = map(remPackage.throttle, 512, 1023, 0, 1023);
+				brakeToWrite = 0;
+			}
+			// brakeControl(brakeToWrite);
+			speedControl( throttleToWrite, remPackage.trigger, last_trigger, remPackage.speedMode );
 			last_trigger = remPackage.trigger;
 			
 			// esc.write(esc_speed);
@@ -262,6 +296,8 @@ void loop()
 
 			// The next time a transmission is received, the returnData will be sent back in acknowledgement
 				returnData.inpVoltage = batteryLevel();
+				returnData.current = currentSens();
+				Serial.println(returnData.current);
 			if ( millis() - lastTransmission >= 500 ) {
 				returnData.tachometerAbs += turnover;
 					returnData.alltimedistance = turns_at_start + returnData.tachometerAbs;
@@ -280,8 +316,14 @@ void loop()
 		// 	// Next package will be a change of setting
 		// 	acquireSetting();
 		// }
-	
+		if (remPackage.frontLight == true) {
+			digitalWrite(frontLightPin, HIGH);
+		} else {
+			digitalWrite(frontLightPin, LOW);
+		}
 		recievedData = false;
+	} else {
+		remPackage.trigger = false;
 	}
 	/* End data handling */
 
@@ -290,11 +332,12 @@ void loop()
 	{
 		// No speed is received within the timeout limit.
 		// setStatus(TIMEOUT);
-		speedControl( defaultThrottle, false , false);
+		speedControl( defaultThrottle, false , false, defaultSpeedMode);
 		timeoutTimer = millis();
 
 		// DEBUG_PRINT( uint64ToAddress(rxSettings.address) + " - Timeout");
 	}
+	recievedData = false;
 	/* End timeout handling */
 }
 
@@ -514,7 +557,7 @@ void initiateReceiver(){
 //   }
 // }
 
-void setThrottle( uint16_t throttle )
+void setThrottle( uint16_t throttle, int maxSpeedCoef )
 {
 //   if( rxSettings.controlMode == 0 ){
 
@@ -523,7 +566,8 @@ void setThrottle( uint16_t throttle )
 //   else if( rxSettings.controlMode == 1 ){
 
 //     esc.attach(throttlePin);
-    esc.writeMicroseconds( map(throttle, 512, 1023, 1000, 2000) ); 
+
+    esc.writeMicroseconds(map(throttle, 0, 102*maxSpeedCoef, minValue, maxValue)); 
 
 //   }
 //   else if( rxSettings.controlMode == 2 ){
@@ -536,31 +580,60 @@ void setThrottle( uint16_t throttle )
 //   }
 }
 
-void speedControl( uint16_t throttle , bool trigger, bool last_trigger )
+void speedControl( uint16_t throttle , bool trigger, bool last_trigger, uint8_t speedMode)
 {
 	// Kill switch
 	// if( rxSettings.triggerMode == 0 ){
+		switch (speedMode) {
+			case 0:
+				speed_multiplier = 0.04;
+				maxSpeedCoef = 10;
+				break;
+			case 1:
+				speed_multiplier = 0.03;
+				maxSpeedCoef = 9;
+				break;
+			case 2:
+				speed_multiplier = 0.02;
+				maxSpeedCoef = 8;
+				break;
+			// выполняется, если не выбрана ни одна альтернатива
+		}
 
 		if ( trigger == true) {
 			if (last_trigger == false) {
 				speed_multiplier = 0.04;
 			}
-			if (speed_multiplier > 0 and  speed_multiplier <= 1) {
-				setThrottle(throttle * speed_multiplier);
-				if ( millis() - last_throttle_multiplier >= 160 ) {
+			if (speed_multiplier > 0 and speed_multiplier <= 1) {
+				setThrottle(throttle * speed_multiplier, maxSpeedCoef);
+				if ( millis() - last_throttle_multiplier >= 160) {
 					speed_multiplier += 0.04;
 					last_throttle_multiplier  = millis();
 				}
 			} else {
-				setThrottle( throttle );
+				setThrottle(throttle, maxSpeedCoef);
 			}
 
 			if (speed_multiplier > 0.99) {
 				speed_multiplier = 0;
 			}
+			if (millis() - brakeLightMillis > brakeLightInterval) {
+				// save the last time you blinked the LED 
+				brakeLightMillis = millis();   
 			
+				// if the LED is off turn it on and vice-versa:
+				if (brakeLightState == LOW) {
+					brakeLightState = HIGH;
+				} else {
+					brakeLightState = LOW;
+				}
+				// set the LED with the ledState of the variable:
+				digitalWrite(brakeLightPin, brakeLightState);
+			}
 		} else {
-			setThrottle( 0 );
+			setThrottle(0, maxSpeedCoef);
+			digitalWrite(brakeLightPin, HIGH);
+			
 		}
 	// }
 
@@ -582,6 +655,11 @@ void speedControl( uint16_t throttle , bool trigger, bool last_trigger )
     // }
 	// }
 } 
+
+// void brakeControl( uint16_t throttle)
+// {
+//     esc.writeMicroseconds(map(throttle, 0, 1023, minValue, maxValue)); 
+// }
 
 // void getUartData()
 // {
@@ -732,8 +810,8 @@ float batteryLevel() {
     total += analogRead(batteryMeasurePin);
   }
 
-	float voltage = (refVoltage / 1024.0) * ( total / (float)samples );
-	// Serial.println(voltage);
+	float voltage = (refVoltage / 1024.0) * ( total / (float)samples ) * batteryCoef;
+	Serial.println(voltage);
 	return voltage;
 }
 
@@ -802,4 +880,17 @@ void save_to_at24(unsigned long number, unsigned long last_int) {
     addr = addr + 1;  
 }
 	addr = 0;
+}
+
+float currentSens() {
+	float total = 0.0;
+	uint8_t samples = 15;
+
+	for (uint8_t i = 0; i < samples; i++) {
+    	total += analogRead(currentMeasurePin);
+	}
+	Serial.println((refVoltage / 1024.0) * ( analogRead(currentMeasurePin) ));
+	Serial.println((refVoltage / 1024.0) * ( analogRead(currentMeasurePin) )- (refVoltage/2));
+	float current = ((refVoltage / 1024.0) * ( total / (float)samples ) - (refVoltage/2) ) / 0.0133;
+	return current;
 }

@@ -49,7 +49,8 @@ struct callback {
 	float inpVoltage;
 	long rpm;
 	long tachometerAbs;
-	long alltimedistance;
+	long allTimeDistance;
+	float current;
 } returnData;
 
 
@@ -58,6 +59,8 @@ struct package {		// | Normal 	| Setting 	| Dummy
 	uint8_t type;		// | 0 			| 1			| 2
 	uint16_t throttle;	// | Throttle 	| 			| 
 	uint8_t trigger;	// | Trigger 	| 			| 
+	bool frontLight;	// | 0 			| 1			| 2
+	uint8_t speedMode;
 } remPackage;
 
 // Define package to transmit settings
@@ -140,8 +143,8 @@ const char stringValues[3][3][13] = {
 };
 
 const char settingUnits[3][3] = {"S", "T", "mm"};
-const char dataSuffix[4][4] = {"KMH", "KM", "%", "KM"};
-const char dataPrefix[4][9] = {"SPEED", "DISTANCE", "BATTERY", "ALLTIME"};
+const char dataSuffix[5][4] = {"KH", "KM", "%", "KM", "W"};
+const char dataPrefix[5][9] = {"SPEED", "DISTANCE", "BATTERY", "ALLTIME", "POWER"};
 
 // Pin defination
 const uint8_t triggerPin = 5;
@@ -149,12 +152,12 @@ const uint8_t batteryMeasurePin = A3;
 const uint8_t hallSensorPin = A2;
 const uint8_t CE = 9;
 const uint8_t CS = 10;
-
+const uint8_t btnLightPin = 6;
+const uint8_t btnSpeedPin = 7;
 // Battery monitering
 const float minVoltage = 3.0;
 const float maxVoltage = 4.2;
 const float refVoltage = 5.1;
-float battery_coef = 12.456;
 // Defining variables for Hall Effect throttle.
 uint16_t hallValue, throttle;
 const uint16_t centerThrottle = 512;
@@ -195,6 +198,16 @@ unsigned long settingChangeMillis = 0;
 // Instantiating RF24 object for NRF24 communication
 RF24 radio(CE, CS);
 
+// Defining front light 
+bool frontLight = false;
+uint32_t lightBtnTimer = 0;
+
+//
+uint8_t speedMode = 0;
+uint8_t nbrOfSpeeds = 2;
+bool speedFlag = false;
+
+
 void setup() {
 	#ifdef DEBUG
 		Serial.begin(9600);
@@ -207,6 +220,8 @@ void setup() {
 	pinMode(triggerPin, INPUT_PULLUP);
 	pinMode(hallSensorPin, INPUT);
 	pinMode(batteryMeasurePin, INPUT);
+	pinMode(btnLightPin, INPUT_PULLUP);
+	pinMode(btnSpeedPin, INPUT_PULLUP);
   // Start OLED operations
 	u8g2.begin();
 	drawStartScreen();
@@ -221,7 +236,8 @@ void setup() {
 
 void loop() {
 	calculateThrottlePosition();
-
+	frontLightCheck();
+	speedModeCheck();
 	if (changeSettings == true) {
 		// Use throttle and trigger to change settings
 		controlSettingsMenu();
@@ -232,6 +248,8 @@ void loop() {
 		remPackage.type = 0;
 		remPackage.trigger = triggerActive();
 		remPackage.throttle = throttle;
+		remPackage.frontLight = frontLight;
+		remPackage.speedMode = speedMode;
 		// Transmit to receiver
 		transmitToReceiver();
 	}
@@ -490,7 +508,7 @@ void transmitToReceiver(){
 			// Listen for an acknowledgement reponse (return of uart data).
 			while (radio.isAckPayloadAvailable()) {
 				radio.read( &returnData, sizeof(returnData) );
-				Serial.println(returnData.alltimedistance);
+				Serial.println(returnData.current);
 
 			}
 
@@ -643,6 +661,7 @@ void updateMainDisplay()
 			drawPage();
 			drawBatteryLevel();
 			drawSignal();
+			drawSpeedMode();
 		}
 	} while ( u8g2.nextPage() );
 }
@@ -853,13 +872,13 @@ void drawPage() {
 	x = 0;
 	y = 16;
 
-	// Rotate the realtime data each 4s.
-	if ((millis() - lastDataRotation) >= 4000) {
+	// Rotate the realtime data each 2s.
+	if ((millis() - lastDataRotation) >= 2000) {
 
 		lastDataRotation = millis();
 		displayData++;
 
-		if (displayData > 3) {
+		if (displayData > 4) {
 			displayData = 0;
 		}
 	}
@@ -874,13 +893,18 @@ void drawPage() {
 			decimals = 2;
 		  break;
 		case 2:
-			value = batteryPackPercentage( returnData.inpVoltage * battery_coef);
+			value = batteryPackPercentage(returnData.inpVoltage);
 			decimals = 1;
 		  break;
 		case 3:
-			value = ratioPulseDistance * returnData.alltimedistance;
+			value = ratioPulseDistance * returnData.allTimeDistance;
 			Serial.println(value);
 			decimals = 2;
+		  break;
+		case 4:
+			value = returnData.inpVoltage * returnData.current;
+			Serial.println(value);
+			decimals = 1;
 		  break;
 	}
 
@@ -992,6 +1016,14 @@ void drawSignal() {
 	}
 }
 
+
+void drawSpeedMode() {
+	x = 105;
+	y = 28;
+	drawString(String(speedMode), 1, x, y, u8g2_font_profont12_tr );
+}
+
+
 /*
  * Print the remotes battery level as a battery on the OLED
  */
@@ -1093,4 +1125,31 @@ char hexCharToBin(char c) {
 		return (c & 0xF) + 9;
 	}
 	return -1;
+}
+
+void frontLightCheck() {
+  // читаем инвертированное значение для удобства
+  bool lightBtnState = !digitalRead(btnLightPin);
+  if (lightBtnState && !frontLight && millis() - lightBtnTimer > 100) {
+    frontLight = true;
+    lightBtnTimer = millis();
+  }
+  if (lightBtnState && frontLight && millis() - lightBtnTimer > 100) {
+    frontLight = false;
+    lightBtnTimer = millis();
+  }
+}
+
+void speedModeCheck() {
+  // читаем инвертированное значение для удобства
+  bool SpeedBtnState = !digitalRead(btnSpeedPin);
+  if (SpeedBtnState && !speedFlag && millis() - lightBtnTimer > 100) {
+    if (speedMode >= nbrOfSpeeds) {
+		speedMode = 0;
+	}
+	else {
+		speedMode += 1;
+	}
+    lightBtnTimer = millis();
+  }
 }
