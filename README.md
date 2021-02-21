@@ -10,6 +10,8 @@ Donation link: https://www.paypal.me/solidgeek
 
 **Important**: This remote is still in development, and is far from perfect. Stay safe, and remember to wear protective gear!
 
+Now remote control support cheap esc, not only vesc. Added button for speed control and front light. Brake light now work automatically when you're driving(blinking) and constantly shine when idle.
+
 ## Update v2.0
 
 Update 2.0 introduces quite a few new interesting features to the remote, and fixes some minor issues from the past. The update includes:
