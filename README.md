@@ -1,4 +1,4 @@
-# FireFly-Remote v2.0
+# FireFly-Remote v2.0.1
 
 Control your electric skateboard with an Arduino controlled remote. This repository contains the needed software for the remote and the receiver, but you will need to install a few Arduino Libraries in order to compile the Arduino sketches. The Arduino IDE comes with most of the needed libraries, but you will ned to manually install VescUartControl from RollingGecko: https://github.com/RollingGecko/VescUartControl.
 
@@ -10,7 +10,7 @@ Donation link: https://www.paypal.me/solidgeek
 
 **Important**: This remote is still in development, and is far from perfect. Stay safe, and remember to wear protective gear!
 
-Now remote control support cheap esc, not only vesc. Added button for speed control and front light. Brake light now work automatically when you're driving(blinking) and constantly shine when idle.
+
 
 ## Update v2.0
 
@@ -26,3 +26,8 @@ Update 2.0 introduces quite a few new interesting features to the remote, and fi
 To-do:
 * UART throttle control
 * Introducing cruise control
+
+
+## Update v2.0.1
+
+Now remote control support cheap esc, not only vesc. Added button for speed control and front light. Brake light now work automatically when you're driving(blinking) and constantly shine when idle.
